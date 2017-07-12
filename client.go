@@ -120,7 +120,6 @@ func (cli *Client) DownloadFile(source *S3Location, dest string) (error) {
     Key: &source.Key,
   })
 
-
   if err != nil {
     return err
   }
@@ -185,6 +184,7 @@ func (cli *Client) DownloadFolder(source *S3Location, dest string) (error) {
         err := cli.DownloadFile(item, filepath.Join(dest, destFile))
 
         if err != nil {
+          close(resCh) // XXX
           workerErrorCh <- err
           break
         }
@@ -236,6 +236,7 @@ func (cli *Client) UploadFolder(source string, dest *S3Location) (error) {
         err := cli.UploadFile(sourceFile, destFile)
 
         if err != nil {
+          close(resCh) // XXX
           workerErrCh <- err
           break
         }
