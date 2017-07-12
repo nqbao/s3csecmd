@@ -139,7 +139,6 @@ func (cli *Client) DownloadFile(source *S3Location, dest string) (error) {
   }
 
   if err != nil {
-    fmt.Printf("%v", input)
     return err
   }
 
@@ -325,7 +324,6 @@ func (cli *Client) listObjects(location *S3Location, workerErrCh chan error) (re
     var marker string
 
     sendError := func(err error) {
-      fmt.Printf("%v\n", err)
       errCh <- err
       close(resCh)
     }
