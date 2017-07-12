@@ -13,7 +13,10 @@ import (
   "github.com/aws/aws-sdk-go/aws/session"
   "github.com/aws/aws-sdk-go/service/s3/s3crypto"
   "github.com/aws/aws-sdk-go/service/s3"
+  "github.com/yookoala/realpath"
   "fmt"
+  "strconv"
+  "sync"
 )
 
 type S3Location struct {
@@ -25,7 +28,24 @@ var (
   InvalidS3LocationError = errors.New("Invalid S3 Location")
   InvalidS3FolderError = errors.New("S3 Key must point to an S3 folder")
   FolderNotWritableError = errors.New("Folder is not writable")
+  NotExistError = errors.New("Folder does not exist")
+  workers int = 0
 )
+
+func init() {
+  val, ok := os.LookupEnv("NUM_WORKERS")
+  if ok {
+    parsedVal, err := strconv.Atoi(val)
+
+    if err == nil {
+      workers = parsedVal
+    }
+  }
+
+  if workers == 0 {
+    workers = 8
+  }
+}
 
 func NewS3Location(path string) (location *S3Location, err error) {
   if !strings.Contains(path, "s3://") {
@@ -148,12 +168,16 @@ func (cli *Client) DownloadFolder(source *S3Location, dest string) (error) {
     return err
   }
 
-  resCh, errCh := cli.listObjects(source)
+  workerErrorCh := make(chan error)
+  resCh, errCh := cli.listObjects(source, workerErrorCh)
 
   // start upload goroutines
-  workers := 8
+  wg := sync.WaitGroup{}
+  wg.Add(workers)
   for i := 0; i < workers; i++ {
     go func() {
+      defer wg.Done()
+
       startIdx := len(source.Key)
       for item := range resCh {
         destFile := strings.Trim(item.Key[startIdx:], "/")
@@ -161,19 +185,104 @@ func (cli *Client) DownloadFolder(source *S3Location, dest string) (error) {
         err := cli.DownloadFile(item, filepath.Join(dest, destFile))
 
         if err != nil {
-          fmt.Printf("%v\n", item)
-          panic(err)
+          workerErrorCh <- err
+          break
         }
       }
     }()
   }
 
   err := <- errCh
+  wg.Wait()
+
   if err == io.EOF {
     return nil
   }
 
   return err
+}
+
+func (cli *Client) UploadFolder(source string, dest *S3Location) (error) {
+  realPath, err := realpath.Realpath(source)
+
+  if err != nil {
+    return err
+  }
+
+  stat, err := os.Stat(realPath)
+  if err != nil {
+    return err
+  }
+
+  if !stat.IsDir() {
+    return NotExistError
+  }
+
+  resCh := make(chan string)
+  workerErrCh := make(chan error)
+  errCh := make(chan error)
+
+  // start the workers
+  wg := sync.WaitGroup{}
+  wg.Add(workers)
+  for i := 0; i < workers; i++ {
+    go func() {
+      defer wg.Done()
+
+      for key := range resCh {
+        sourceFile := filepath.Join(source, key)
+        destFile := &S3Location{dest.Bucket, fmt.Sprintf("%v/%v", dest.Key, key)}
+        fmt.Printf("Uploading %v\n", key)
+        err := cli.UploadFile(sourceFile, destFile)
+
+        if err != nil {
+          workerErrCh <- err
+          break
+        }
+      }
+    }()
+  }
+
+  go func() {
+    startIdx := len(realPath)
+    upload := func(path string, f os.FileInfo, err error) error {
+      // check if we have any worker error then propagate the error
+      select {
+      case workerErr := <- workerErrCh:
+        return workerErr
+      default:
+      }
+
+      if err != nil {
+        return err
+      }
+
+      if !f.IsDir() {
+        key := path[startIdx+1:]
+        resCh <- key
+      }
+
+      return nil
+    }
+
+    err := filepath.Walk(realPath, upload)
+
+    if err == nil {
+      errCh <- io.EOF
+    } else {
+      errCh <- err
+    }
+  }()
+
+  finalErr := <- errCh
+  close(resCh)  // this is to terminate the workers
+  wg.Wait()     // and wait for them to finish
+
+  if finalErr == io.EOF {
+    return nil
+  }
+
+  return finalErr
 }
 
 // Validate S3 location for download. It will make sure that the location is not pointed
@@ -206,7 +315,7 @@ func (cli *Client) validateFolderKey(source *S3Location) (error) {
 }
 
 // List object from an S3Location and yielding the result
-func (cli *Client) listObjects(location *S3Location) (resCh chan *S3Location, errCh chan error) {
+func (cli *Client) listObjects(location *S3Location, workerErrCh chan error) (resCh chan *S3Location, errCh chan error) {
   resCh = make(chan *S3Location)
   errCh = make(chan error)
 
@@ -214,7 +323,28 @@ func (cli *Client) listObjects(location *S3Location) (resCh chan *S3Location, er
   go func() {
     var marker string
 
+    sendError := func(err error) {
+      fmt.Printf("%v\n", err)
+      errCh <- err
+      close(resCh)
+    }
+
+    checkWorkerError := func() bool {
+      // propagate the error the stop the whole process
+      select {
+      case workerErr := <- workerErrCh:
+        sendError(workerErr)
+        return true
+      default:
+        return false
+      }
+    }
+
     for {
+      if checkWorkerError() {
+        return
+      }
+
       output, err := svc.ListObjects(&s3.ListObjectsInput{
         Bucket: &location.Bucket,
         Prefix: &location.Key,
@@ -222,11 +352,15 @@ func (cli *Client) listObjects(location *S3Location) (resCh chan *S3Location, er
       })
 
       if err != nil {
-        errCh <- err
+        sendError(err)
         break
       }
 
       for _, object := range output.Contents {
+        if checkWorkerError() {
+          return
+        }
+
         // skip directory and instruction file
         if !strings.HasSuffix(*object.Key, "/") &&
           !strings.HasSuffix(*object.Key, s3crypto.DefaultInstructionKeySuffix) {
@@ -245,7 +379,7 @@ func (cli *Client) listObjects(location *S3Location) (resCh chan *S3Location, er
           marker = *output.NextMarker
         }
       } else {
-        errCh <- io.EOF
+        sendError(io.EOF)
         break
       }
     }
