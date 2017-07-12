@@ -32,13 +32,22 @@ func validateArgs() {
     kmsId = val
   }
 
-  if kmsId == "" || flag.NArg() < 2 {
-    fmt.Print("Usage: s3csecmd [-a <access_key>] [-s <secret_key>] -kms-id <kms_id> SOURCE DEST\n")
+  if kmsId == "" || flag.NArg() < 3 {
+    fmt.Print("Usage: s3csecmd [-a <access_key>] [-s <secret_key>] -kms-id <kms_id> [CMD] ARG1 ARG2 ... ARGN\n")
+    fmt.Print("    Possible commands are:\n")
+    fmt.Print("    s3csecmd cp SOURCE DEST\n")
+    fmt.Print("\n")
     os.Exit(1)
   }
 
-  sourcePath = flag.Arg(0)
-  destPath = flag.Arg(1)
+  cmd := flag.Arg(0)
+  if cmd == "cp" {
+    sourcePath = flag.Arg(1)
+    destPath = flag.Arg(2)
+  } else {
+    fmt.Printf("Unknown command %v\n", cmd)
+    os.Exit(1)
+  }
 }
 
 func main() {
