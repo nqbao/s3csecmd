@@ -340,7 +340,7 @@ func monitorPoolError(p *WorkerPool, errCh chan error) error {
     select {
     case t := <- p.ResultCh:
       if t.Err != nil {
-        fmt.Fprint(os.Stderr, "%v\n", t.Err)
+        fmt.Fprint(os.Stderr, fmt.Sprintf("%v\n", t.Err))
         p.Stop()
       }
     case finalErr = <- errCh:
