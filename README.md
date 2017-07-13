@@ -19,5 +19,5 @@ s3csecmd --kms-id XXXX cp s3://bucket/remote/path local_path
 
 ## TODO
 
- - [ ] Improve error handling
+ - [x] Improve error handling
  - [ ] Add options to customize encryption method

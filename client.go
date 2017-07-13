@@ -16,7 +16,6 @@ import (
   "github.com/yookoala/realpath"
   "fmt"
   "strconv"
-  "sync"
 )
 
 type S3Location struct {
@@ -166,39 +165,25 @@ func (cli *Client) DownloadFolder(source *S3Location, dest string) (error) {
     return err
   }
 
-  workerErrorCh := make(chan error)
-  resCh, errCh := cli.listObjects(source, workerErrorCh)
-
-  // start upload goroutines
-  wg := sync.WaitGroup{}
-  wg.Add(workers)
-  for i := 0; i < workers; i++ {
-    go func() {
-      defer wg.Done()
-
-      startIdx := len(source.Key)
-      for item := range resCh {
-        destFile := strings.Trim(item.Key[startIdx:], "/")
-        fmt.Printf("Downloading %v ...\n", destFile)
-        err := cli.DownloadFile(item, filepath.Join(dest, destFile))
-
-        if err != nil {
-          close(resCh) // XXX
-          workerErrorCh <- err
-          break
-        }
-      }
-    }()
+  startIdx := len(source.Key)
+  p := NewWorkerPool(workers)
+  tf := func(item *S3Location) (func () error) {
+    return func() error {
+      destFile := strings.Trim(item.Key[startIdx:], "/")
+      fmt.Printf("Downloading %v ...\n", destFile)
+      return cli.DownloadFile(item, filepath.Join(dest, destFile))
+    }
   }
 
-  err := <- errCh
-  wg.Wait()
+  errCh := cli.listObjects(source, p, tf)
 
-  if err == io.EOF {
+  finalErr := monitorPoolError(p, errCh)
+
+  if finalErr == io.EOF {
     return nil
   }
 
-  return err
+  return finalErr
 }
 
 func (cli *Client) UploadFolder(source string, dest *S3Location) (error) {
@@ -217,70 +202,43 @@ func (cli *Client) UploadFolder(source string, dest *S3Location) (error) {
     return NotExistError
   }
 
-  resCh := make(chan string)
-  workerErrCh := make(chan error)
+  p := NewWorkerPool(workers)
   errCh := make(chan error)
 
-  // start the workers
-  wg := sync.WaitGroup{}
-  wg.Add(workers)
-  for i := 0; i < workers; i++ {
-    go func() {
-      defer wg.Done()
-
-      for key := range resCh {
-        sourceFile := filepath.Join(source, key)
-        destFile := &S3Location{dest.Bucket, fmt.Sprintf("%v/%v", dest.Key, key)}
-        fmt.Printf("Uploading %v\n", key)
-        err := cli.UploadFile(sourceFile, destFile)
-
-        if err != nil {
-          close(resCh) // XXX
-          workerErrCh <- err
-          break
-        }
-      }
-    }()
+  // task factory function
+  tf := func(key string) (func() error) {
+    return func() error {
+      sourceFile := filepath.Join(source, key)
+      destFile := &S3Location{dest.Bucket, fmt.Sprintf("%v/%v", dest.Key, key)}
+      fmt.Printf("Uploading %v\n", key)
+      return cli.UploadFile(sourceFile, destFile)
+    }
   }
 
   go func() {
     startIdx := len(realPath)
     upload := func(path string, f os.FileInfo, err error) error {
-      // check if we have any worker error then propagate the error
-      select {
-      case workerErr := <- workerErrCh:
-        return workerErr
-      default:
-      }
 
-      if err != nil {
-        return err
-      }
-
-      if !f.IsDir() {
+      // if we have no error and this is a file, then we submit the task
+      if err == nil && !f.IsDir() {
         key := path[startIdx+1:]
-        resCh <- key
+        err = p.SubmitFunc(tf(key))
       }
 
-      return nil
+      return err
     }
 
     err := filepath.Walk(realPath, upload)
 
     if err == nil {
+      p.Stop() // stop the pool to drain all current task
       errCh <- io.EOF
     } else {
       errCh <- err
     }
   }()
 
-  finalErr := <- errCh
-  close(resCh)  // this is to terminate the workers
-  wg.Wait()     // and wait for them to finish
-
-  if finalErr == io.EOF {
-    return nil
-  }
+  finalErr := monitorPoolError(p, errCh)
 
   return finalErr
 }
@@ -315,74 +273,88 @@ func (cli *Client) validateFolderKey(source *S3Location) (error) {
 }
 
 // List object from an S3Location and yielding the result
-func (cli *Client) listObjects(location *S3Location, workerErrCh chan error) (resCh chan *S3Location, errCh chan error) {
-  resCh = make(chan *S3Location)
+func (cli *Client) listObjects(location *S3Location, p *WorkerPool,
+    tf func(*S3Location) (func() error)) (errCh chan error) {
   errCh = make(chan error)
 
   svc := s3.New(cli.Session)
   go func() {
     var marker string
 
-    sendError := func(err error) {
-      errCh <- err
-      close(resCh)
-    }
-
-    checkWorkerError := func() bool {
-      // propagate the error the stop the whole process
-      select {
-      case workerErr := <- workerErrCh:
-        sendError(workerErr)
-        return true
-      default:
-        return false
-      }
-    }
-
     for {
-      if checkWorkerError() {
-        return
-      }
-
       output, err := svc.ListObjects(&s3.ListObjectsInput{
         Bucket: &location.Bucket,
         Prefix: &location.Key,
         Marker: &marker,
       })
 
-      if err != nil {
-        sendError(err)
-        break
-      }
+      if err == nil {
+        for _, object := range output.Contents {
+          // skip directory and instruction file
+          if !strings.HasSuffix(*object.Key, "/") &&
+            !strings.HasSuffix(*object.Key, s3crypto.DefaultInstructionKeySuffix) {
 
-      for _, object := range output.Contents {
-        if checkWorkerError() {
-          return
+            err = p.SubmitFunc(tf(&S3Location{
+              Bucket: location.Bucket,
+              Key: *object.Key,
+            }))
+
+            if err != nil {
+              break
+            }
+          }
+
+          marker = *object.Key
         }
 
-        // skip directory and instruction file
-        if !strings.HasSuffix(*object.Key, "/") &&
-          !strings.HasSuffix(*object.Key, s3crypto.DefaultInstructionKeySuffix) {
-          resCh <- &S3Location{
-            Bucket: location.Bucket,
-            Key: *object.Key,
+        // continue if there is no error
+        if err == nil {
+          if *output.IsTruncated {
+            // if NextMarker is available, then use it
+            if output.NextMarker != nil {
+              marker = *output.NextMarker
+            }
+          } else {
+            err = io.EOF
           }
         }
-
-        marker = *object.Key
       }
 
-      if *output.IsTruncated {
-        // if NextMarker is available, then use it
-        if output.NextMarker != nil {
-          marker = *output.NextMarker
-        }
-      } else {
-        sendError(io.EOF)
+      if err != nil {
+        p.Stop()
+        errCh <- err
         break
       }
     }
   }()
 
   return
+}
+
+func monitorPoolError(p *WorkerPool, errCh chan error) error {
+  var finalErr error
+
+  for {
+    done := false
+
+    select {
+    case t := <- p.ResultCh:
+      if t.Err != nil {
+        fmt.Fprint(os.Stderr, "%v\n", t.Err)
+        p.Stop()
+      }
+    case finalErr = <- errCh:
+      done = true
+    }
+
+    if done {
+      break
+    }
+  }
+
+  if finalErr == io.EOF {
+    return nil
+  }
+
+  return finalErr
 }

@@ -81,7 +81,8 @@ func main() {
     }
 
     if err != nil {
-      panic(err)
+      fmt.Fprintf(os.Stderr, "Unexpected error: %v\n", err)
+      os.Exit(1)
     }
   } else if strings.Contains(destPath, "s3://") {
     s3loc, err := NewS3Location(destPath)
@@ -91,7 +92,8 @@ func main() {
     }
 
     if err != nil {
-      panic(err)
+      fmt.Fprintf(os.Stderr, "Unexpected error: %v\n", err)
+      os.Exit(1)
     }
   } else {
     fmt.Print("You must specify at least one s3 location.\n")
