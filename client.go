@@ -162,6 +162,7 @@ func (cli *Client) DownloadFolder(source *S3Location, dest string) (error) {
 
   // validate the source
   if err := cli.validateFolderKey(source); err != nil {
+    fmt.Printf("Unable to validate folder key\n")
     return err
   }
 
@@ -256,14 +257,14 @@ func (cli *Client) IsFile(loc *S3Location) (bool) {
 
 // Validate S3 location for download. It will make sure that the location is not pointed
 // to an S3 file
-func (cli *Client) validateFolderKey(source *S3Location) (error) {
+func (cli *Client) validateFolderKey(loc *S3Location) (error) {
   svc := s3.New(cli.Session)
 
   // just make sure this is not a file
-  if len(source.Key) > 0 {
-    _, err := svc.HeadObject(&s3.HeadObjectInput{
-      Bucket: &source.Bucket,
-      Key: &source.Key,
+  if len(loc.Key) > 0 {
+    _, err := svc.GetObject(&s3.GetObjectInput{
+      Bucket: &loc.Bucket,
+      Key: &loc.Key,
     })
 
     if err != nil {

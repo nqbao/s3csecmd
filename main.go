@@ -78,8 +78,10 @@ func main() {
 
     if err == nil {
       if cli.IsFile(s3loc) {
+        fmt.Printf("Downloading file from %v ...\n", sourcePath)
         err = cli.DownloadFile(s3loc, destPath)
       } else {
+        fmt.Printf("Downloading folder from %v ...\n", sourcePath)
         err = cli.DownloadFolder(s3loc, destPath)
       }
     }
@@ -93,8 +95,10 @@ func main() {
 
     if err == nil {
       if ok, _ := IsFile(sourcePath); ok {
+        fmt.Printf("Uploading file from %v ...\n", sourcePath)
         err = cli.UploadFile(sourcePath, s3loc)
       } else {
+        fmt.Printf("Uploading folder from %v ...\n", sourcePath)
         err = cli.UploadFolder(sourcePath, s3loc)
       }
     }
