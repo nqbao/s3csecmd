@@ -35,3 +35,14 @@ func IsDirWritable(path string) (bool, error) {
 
   return false, nil
 }
+
+
+func IsFile(path string) (bool, error) {
+  stat, err := os.Stat(path)
+
+  if err != nil {
+    return false, err
+  }
+
+  return !stat.IsDir(), nil
+}

@@ -88,7 +88,11 @@ func main() {
     s3loc, err := NewS3Location(destPath)
 
     if err == nil {
-      err = cli.UploadFolder(sourcePath, s3loc)
+      if ok, _ := IsFile(sourcePath); ok {
+        err = cli.UploadFile(sourcePath, s3loc)
+      } else {
+        err = cli.UploadFolder(sourcePath, s3loc)
+      }
     }
 
     if err != nil {
