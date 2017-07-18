@@ -243,6 +243,17 @@ func (cli *Client) UploadFolder(source string, dest *S3Location) (error) {
   return finalErr
 }
 
+func (cli *Client) IsFile(loc *S3Location) (bool) {
+  svc := cli.s3
+
+  _, err := svc.HeadObject(&s3.HeadObjectInput{
+    Bucket: &loc.Bucket,
+    Key: &loc.Key,
+  })
+
+  return err == nil
+}
+
 // Validate S3 location for download. It will make sure that the location is not pointed
 // to an S3 file
 func (cli *Client) validateFolderKey(source *S3Location) (error) {
@@ -250,7 +261,7 @@ func (cli *Client) validateFolderKey(source *S3Location) (error) {
 
   // just make sure this is not a file
   if len(source.Key) > 0 {
-    _, err := svc.GetObject(&s3.GetObjectInput{
+    _, err := svc.HeadObject(&s3.HeadObjectInput{
       Bucket: &source.Bucket,
       Key: &source.Key,
     })

@@ -77,7 +77,11 @@ func main() {
     s3loc, err := NewS3Location(sourcePath)
 
     if err == nil {
-      err = cli.DownloadFolder(s3loc, destPath)
+      if cli.IsFile(s3loc) {
+        err = cli.DownloadFile(s3loc, destPath)
+      } else {
+        err = cli.DownloadFolder(s3loc, destPath)
+      }
     }
 
     if err != nil {
