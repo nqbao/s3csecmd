@@ -106,6 +106,7 @@ func (cli *Client) UploadFile(source string, dest *S3Location) (error) {
     Bucket:               &dest.Bucket,
     Key:                  &dest.Key,
     ACL:                  aws.String("bucket-owner-full-control"),
+    ServerSideEncryption: aws.String("AES256"),
   }
 
   _, err2 := cli.encryptionClient.PutObject(input)
