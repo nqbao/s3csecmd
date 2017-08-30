@@ -32,7 +32,7 @@ func validateArgs() {
     kmsId = val
   }
 
-  if kmsId == "" || flag.NArg() < 3 {
+  if flag.NArg() < 3 {
     fmt.Print("Usage: s3csecmd [-a <access_key>] [-s <secret_key>] -kms-id <kms_id> [CMD] ARG1 ARG2 ... ARGN\n")
     fmt.Print("    Possible commands are:\n")
     fmt.Print("    s3csecmd cp SOURCE DEST\n")
